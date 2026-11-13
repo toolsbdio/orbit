@@ -1,0 +1,6 @@
+{
+  "name": "Orbit",
+  "description": "A fast, modern Android web browser with multi-tab management, private tabs, smart address and search bar, bookmarks, history, find-in-page, and desktop site mode.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
