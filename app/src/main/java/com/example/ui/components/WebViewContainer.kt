@@ -4,8 +4,10 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
 import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -87,6 +89,12 @@ fun BrowserWebViewHost(
             onNavChanged = { back, fwd -> currentOnNavChanged(tab.id, back, fwd) },
             onError = { desc -> currentOnError(tab.id, desc) },
             onFindMatches = { ord, total -> currentOnFindMatches(ord, total) },
+            onRendererGone = { deadView, message ->
+                if (webViews[tab.id] === deadView) {
+                    webViews.remove(tab.id)
+                }
+                currentOnError(tab.id, message)
+            },
         ).also { created ->
             webViews[tab.id] = created
             if (tab.url.isNotBlank()) {
@@ -103,7 +111,18 @@ fun BrowserWebViewHost(
                     val wv = webViews[cmd.tabId] ?: targetTab?.let { getOrCreateWebView(it) }
                     wv?.loadUrl(cmd.url)
                 }
-                is BrowserWebCommand.Reload -> webViews[cmd.tabId]?.reload()
+                is BrowserWebCommand.Reload -> {
+                    val wv = webViews[cmd.tabId]
+                    if (wv != null) {
+                        if (wv.url.isNullOrBlank() && cmd.tabId == activeTab.id && activeTab.url.isNotBlank()) {
+                            wv.loadUrl(activeTab.url)
+                        } else {
+                            wv.reload()
+                        }
+                    } else if (cmd.tabId == activeTab.id && activeTab.url.isNotBlank()) {
+                        getOrCreateWebView(activeTab)
+                    }
+                }
                 is BrowserWebCommand.StopLoading -> webViews[cmd.tabId]?.stopLoading()
                 is BrowserWebCommand.GoBack -> webViews[cmd.tabId]?.let { if (it.canGoBack()) it.goBack() }
                 is BrowserWebCommand.GoForward -> webViews[cmd.tabId]?.let { if (it.canGoForward()) it.goForward() }
@@ -214,6 +233,7 @@ private fun createConfiguredWebView(
     onNavChanged: (Boolean, Boolean) -> Unit,
     onError: (String) -> Unit,
     onFindMatches: (Int, Int) -> Unit,
+    onRendererGone: (WebView?, String) -> Unit,
 ): WebView {
     return WebView(context).apply {
         layoutParams = ViewGroup.LayoutParams(
@@ -277,6 +297,30 @@ private fun createConfiguredWebView(
                     onError(error?.description?.toString().orEmpty())
                 }
             }
+
+            override fun onRenderProcessGone(
+                view: WebView?,
+                detail: RenderProcessGoneDetail?,
+            ): Boolean {
+                val crashed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    detail?.didCrash() == true
+                } else {
+                    false
+                }
+                view?.let { deadView ->
+                    (deadView.parent as? ViewGroup)?.removeView(deadView)
+                    deadView.destroy()
+                }
+                onRendererGone(
+                    view,
+                    if (crashed) {
+                        "Web page renderer stopped unexpectedly. Tap Try Again to reload."
+                    } else {
+                        "Web page renderer was recycled. Tap Try Again to reload."
+                    },
+                )
+                return true
+            }
         }
 
         webChromeClient = object : WebChromeClient() {
@@ -300,14 +344,36 @@ private fun applyWebSettings(
     settings: BrowserSettings,
 ) {
     webView.settings.apply {
-        javaScriptEnabled = settings.javaScriptEnabled
-        domStorageEnabled = !tab.isPrivate
-        databaseEnabled = !tab.isPrivate
-        builtInZoomControls = true
-        displayZoomControls = false
-        useWideViewPort = true
-        loadWithOverviewMode = true
-        mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-        userAgentString = if (tab.isDesktopMode) DESKTOP_USER_AGENT else null
+        if (javaScriptEnabled != settings.javaScriptEnabled) {
+            javaScriptEnabled = settings.javaScriptEnabled
+        }
+        val shouldPersistStorage = !tab.isPrivate
+        if (domStorageEnabled != shouldPersistStorage) {
+            domStorageEnabled = shouldPersistStorage
+        }
+        if (databaseEnabled != shouldPersistStorage) {
+            databaseEnabled = shouldPersistStorage
+        }
+        if (!builtInZoomControls) {
+            builtInZoomControls = true
+        }
+        if (displayZoomControls) {
+            displayZoomControls = false
+        }
+        if (!useWideViewPort) {
+            useWideViewPort = true
+        }
+        if (!loadWithOverviewMode) {
+            loadWithOverviewMode = true
+        }
+        if (mixedContentMode != WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE) {
+            mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+        }
+        val isCurrentlyDesktop = userAgentString == DESKTOP_USER_AGENT
+        if (tab.isDesktopMode && !isCurrentlyDesktop) {
+            userAgentString = DESKTOP_USER_AGENT
+        } else if (!tab.isDesktopMode && isCurrentlyDesktop) {
+            userAgentString = null
+        }
     }
 }
